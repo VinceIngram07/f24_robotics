@@ -102,6 +102,21 @@ def generate_launch_description():
     rviz_config_dir = os.path.join(get_package_share_directory('webots_apriltags'),
                                    'rviz', 'turtlebot3_apriltags.rviz')
 
+    apriltag_node = Node(
+        package='apriltag_ros',
+        executable='apriltag_node',
+        name='apriltag_node',
+        remappings=[
+            ('image_rect', '/TurtleBot3Burger/camera/image_color'),
+            ('camera_info', '/TurtleBot3Burger/camera/camera_info')
+        ],
+        parameters=[
+            {'family': '36h11'},  # Family of tags being used
+            {'size': 0.162},      # Adjust based on your tag size in meters
+            {'max_hamming': 0},   # Allowable bit errors (0 for perfect match)
+        ],
+        output='screen'
+    )
 
 
     return LaunchDescription([
@@ -123,6 +138,8 @@ def generate_launch_description():
         footprint_publisher,
 
         turtlebot_driver,
+
+        apriltag_node,
 
         # This action will kill all nodes once the Webots simulation has exited
         launch.actions.RegisterEventHandler(
