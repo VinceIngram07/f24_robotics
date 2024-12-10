@@ -15,137 +15,146 @@
 # limitations under the License.
 
 """Launch Webots TurtleBot3 Burger driver."""
-#!/usr/bin/env python
-
 
 import os
-
-from launch import LaunchDescription
-
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, ExecuteProcess
-
-from launch_ros.actions import Node
-
 from launch.substitutions import LaunchConfiguration
-
-from ament_index_python.packages import get_package_share_directory
-
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions.path_join_substitution import PathJoinSubstitution
+from launch import LaunchDescription
+from launch_ros.actions import Node
+import launch
+from ament_index_python.packages import get_package_share_directory, get_packages_with_prefixes
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.actions import IncludeLaunchDescription
+from webots_ros2_driver.webots_launcher import WebotsLauncher
+from webots_ros2_driver.webots_controller import WebotsController
+from webots_ros2_driver.wait_for_controller_connection import WaitForControllerConnection
 
 
 def generate_launch_description():
+    package_dir = get_package_share_directory('webots_apriltags')
+    world = LaunchConfiguration('world')
+    mode = LaunchConfiguration('mode')
+    use_sim_time = LaunchConfiguration('use_sim_time', default=True)
 
-    use_sim_time = LaunchConfiguration('use_sim_time', default='false')
-
-
-    # Include the turtlebot3_bringup launch file (robot.launch.py)
-
-    turtlebot3_bringup_launch = IncludeLaunchDescription(
-
-        PythonLaunchDescriptionSource(
-
-            os.path.join(get_package_share_directory('turtlebot3_bringup'), 'launch', 'robot.launch.py')
-
-        ),
-
-        launch_arguments={'use_sim_time': use_sim_time}.items()
-
+    webots = WebotsLauncher(
+        world=PathJoinSubstitution([package_dir, 'worlds', world]),
+        #mode=mode,
+        ros2_supervisor=True
     )
 
-
-    # Run the v4l2_camera node for camera input
-
-    v4l2_camera_node = Node(
-
-        package='v4l2_camera',
-
-        executable='v4l2_camera_node',
-
-        name='v4l2_camera_node',
-
+    robot_state_publisher = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
         output='screen',
-
-        parameters=[{'use_sim_time': use_sim_time}],
-
-        remappings=[('/image_raw', '/camera/image_raw')]  # Remap to your camera topic
-
+        parameters=[{
+            'robot_description': '<robot name=""><link name=""/></robot>'
+        }],
     )
 
+    footprint_publisher = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        output='screen',
+        arguments=['0', '0', '0', '0', '0', '0', 'base_link', 'base_footprint'],
+    )
 
-    # Run the apriltag_ros node with remapped topics and parameter file
+    # ROS control spawners
+    controller_manager_timeout = ['--controller-manager-timeout', '50']
+    controller_manager_prefix = 'python.exe' if os.name == 'nt' else ''
+    diffdrive_controller_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        output='screen',
+        prefix=controller_manager_prefix,
+        arguments=['diffdrive_controller'] + controller_manager_timeout,
+    )
+    joint_state_broadcaster_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        output='screen',
+        prefix=controller_manager_prefix,
+        arguments=['joint_state_broadcaster'] + controller_manager_timeout,
+    )
+    ros_control_spawners = [diffdrive_controller_spawner, joint_state_broadcaster_spawner]
 
-    apriltag_ros_node = Node(
+    robot_description_path = os.path.join(package_dir, 'resource', 'turtlebot_webots.urdf')
+    ros2_control_params = os.path.join(package_dir, 'resource', 'ros2control.yml')
+    mappings = [('/diffdrive_controller/cmd_vel_unstamped', '/cmd_vel'), ('/diffdrive_controller/odom', '/odom')]
+    turtlebot_driver = WebotsController(
+        robot_name='TurtleBot3Burger',
+        parameters=[
+            {'robot_description': robot_description_path,
+             'use_sim_time': use_sim_time,
+             'set_robot_state_publisher': True},
+            ros2_control_params
+        ],
+        remappings=mappings,
+        respawn=True
+    )
 
+    # Wait for the simulation to be ready to start controllers
+    waiting_nodes = WaitForControllerConnection(
+        target_driver=turtlebot_driver,
+        nodes_to_start= ros_control_spawners
+    )
+    
+    rviz_config_dir = os.path.join(get_package_share_directory('webots_apriltags'),
+                                   'rviz', 'turtlebot3_apriltags.rviz')
+
+    apriltag_node = Node(
         package='apriltag_ros',
-
         executable='apriltag_node',
-
         name='apriltag_node',
-
-        output='screen',
-
-        parameters=[{'use_sim_time': use_sim_time}],
-
-        arguments=[
-
-            '--ros-args',
-
-            '-r', 'image_rect:=/image_raw',
-
-            '-r', 'camera_info:=/camera_info',
-
-            '--params-file',
-
-            os.path.join(get_package_share_directory('apriltag_ros'), 'cfg', 'tags_36h11.yaml')
-
-        ]
-
-    )
-
-
-    # Run the Random2.py script using python3
-
-    random2_script = ExecuteProcess(
-
-        cmd=['python3', '~/f24_robotics/webots_apriltags/scripts/Random2.py'],
-
-        name='random2_script',
-
+        remappings=[
+            ('image_rect', '/TurtleBot3Burger/camera/image_color'),
+            ('camera_info', '/TurtleBot3Burger/camera/camera_info')
+        ],
+        parameters=[
+            {'family': '36h11'},  # Family of tags being used
+            {'size': 0.162},      # Adjust based on your tag size in meters
+            {'max_hamming': 0},   # Allowable bit errors (0 for perfect match)
+        ],
         output='screen'
-
     )
 
 
     return LaunchDescription([
-
         DeclareLaunchArgument(
-
-            'use_sim_time',
-
-            default_value='false',
-
-            description='Use simulation time (set to true if using simulation)'
-
+            'world',
+            default_value='turtlebot3_apriltags.wbt',
+            description='Choose one of the world files from `/webots_ros2_turtlebot/world` directory'
         ),
+        DeclareLaunchArgument(
+            'mode',
+            default_value='realtime',
+            description='Webots startup mode'
+        ),
+        webots,
+        webots._supervisor,
+        waiting_nodes,
 
+        robot_state_publisher,
+        footprint_publisher,
 
-        # Launch the turtlebot3_bringup robot launch file
+        turtlebot_driver,
 
-        turtlebot3_bringup_launch,
+        apriltag_node,
 
-
-        # Launch the v4l2_camera_node for camera input
-
-        v4l2_camera_node,
-
-
-        # Launch the apriltag_ros_node for Apriltag detection
-
-        apriltag_ros_node,
-
-
-        # Launch the Random2.py script
-
-        random2_script,
-
+        # This action will kill all nodes once the Webots simulation has exited
+        launch.actions.RegisterEventHandler(
+            event_handler=launch.event_handlers.OnProcessExit(
+                target_action=webots,
+                on_exit=[
+                    launch.actions.EmitEvent(event=launch.events.Shutdown())
+                ],
+            )
+        ),
+        Node(
+            package='rviz2',
+            executable='rviz2',
+            name='rviz2',
+            arguments=['-d', rviz_config_dir],
+            parameters=[{'use_sim_time': use_sim_time}],
+            output='screen'),
     ])
