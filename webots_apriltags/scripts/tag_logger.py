@@ -15,10 +15,21 @@ class TagLogger(Node):
 
     def listener_callback(self, msg):
         for detection in msg.detections:
-            tag_id = detection.id[0]  # Assuming single tag per detection
-            if tag_id not in self.detected_tags:
-                self.detected_tags.add(tag_id)
-                self.get_logger().info(f"Tag detected: ID {tag_id}, Pose: {detection.pose.pose.pose}")
+            try:
+                tag_id = detection.id  # Check if `id` is valid
+                center = detection.centre  # Adjust based on actual field names
+                corners = detection.corners  # Example for logging corners
+                if tag_id not in self.detected_tags:
+                    self.detected_tags.add(tag_id)
+                    self.get_logger().info(
+                        f"Tag detected: ID {tag_id}, Center: ({center.x}, {center.y})"
+                    )
+                    for i, corner in enumerate(corners, start=1):
+                        self.get_logger().info(
+                            f"  Corner {i}: x={corner.x}, y={corner.y}"
+                        )
+            except AttributeError as e:
+                self.get_logger().error(f"Error accessing detection fields: {e}")
 
 
 def main(args=None):

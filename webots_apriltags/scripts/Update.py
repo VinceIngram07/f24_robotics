@@ -5,7 +5,6 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from apriltag_msgs.msg import AprilTagDetectionArray
 from rclpy.qos import ReliabilityPolicy, QoSProfile
-import csv  # Import CSV for logging
 import math
 
 LINEAR_VEL = 0.22
@@ -24,6 +23,7 @@ class RandomWalk(Node):
         self.scan_cleaned = []
         self.stall = False
         self.turtlebot_moving = False
+        self.stop_flag = False  # Flag to stop robot
         self.publisher_ = self.create_publisher(Twist, 'cmd_vel', 10)
         
         # LaserScan subscriber
@@ -54,11 +54,6 @@ class RandomWalk(Node):
         timer_period = 0.5
         self.timer = self.create_timer(timer_period, self.timer_callback)
 
-        # Logging position and tag detection data
-        self.log_file = open('tag_positions.csv', 'w', newline='')  # CSV file to log data
-        self.log_writer = csv.writer(self.log_file)
-        self.log_writer.writerow(['Time', 'X_Position', 'Y_Position', 'Tag_ID', 'Tag_Detected'])
-
     # LaserScan callback
     def listener_callback1(self, msg1):
         scan = msg1.ranges
@@ -70,31 +65,35 @@ class RandomWalk(Node):
         self.pose_saved = position
         self.get_logger().info(f'Self position: {position.x}, {position.y}, {position.z}')
 
-    # AprilTag detections callback (logs tag detections to CSV)
+    # AprilTag detections callback
     def apriltag_callback(self, msg):
+        target_tag_id = 1  # Change this to the specific AprilTag ID you are looking for
         if msg.detections:
             for detection in msg.detections:
                 tag_id = detection.id
-                self.log_writer.writerow([
-                    self.get_clock().now().to_msg().sec, 
-                    self.pose_saved.x, 
-                    self.pose_saved.y, 
-                    tag_id, 
-                    'Yes'
-                ])
-                self.get_logger().info(f"Detected Tag ID: {tag_id} at position X: {self.pose_saved.x}, Y: {self.pose_saved.y}")
+                if tag_id == target_tag_id:  # If we find the target tag, stop the robot
+                    if not self.stop_flag:
+                        self.get_logger().info(f"Found Target Tag ID: {tag_id}. Stopping the robot.")
+                        self.stop_robot()
+                    return  # Exit early since we don't want to continue the loop
+                
+                family = detection.family
+                centre = detection.centre
+                corners = detection.corners
+
+                self.get_logger().info(f"Detected Tag Family: {family}, ID: {tag_id}")
+                self.get_logger().info(f"Centre: x={centre.x}, y={centre.y}")
+                self.get_logger().info("Corners:")
+                for i, corner in enumerate(corners):
+                    self.get_logger().info(f"  Corner {i + 1}: x={corner.x}, y={corner.y}")
         else:
-            self.log_writer.writerow([
-                self.get_clock().now().to_msg().sec, 
-                self.pose_saved.x, 
-                self.pose_saved.y, 
-                'None', 
-                'No'
-            ])
             self.get_logger().info("No tags detected")
 
-    # Main control loop (movement logic)
+    # Main control loop
     def timer_callback(self):
+        if self.stop_flag:  # Do not execute movement if stop_flag is True
+            return
+
         if not self.scan_cleaned:
             self.turtlebot_moving = False
             return
@@ -118,15 +117,12 @@ class RandomWalk(Node):
 
     def stop_robot(self):
         """Stop the robot if the tag is found."""
-        self.cmd.linear.x = 0.0
-        self.cmd.angular.z = 0.0
-        self.publisher_.publish(self.cmd)
-        self.get_logger().info("Stopping robot as tag was found")
-        self.destroy_node()
-
-    def destroy_node(self):
-        self.log_file.close()  # Close the CSV file when the node is destroyed
-        super().destroy_node()
+        self.stop_flag = True  # Set the stop flag to true to prevent future movement
+        for _ in range(5):  # Send multiple stop commands to ensure robot stops
+            self.cmd.linear.x = 0.0
+            self.cmd.angular.z = 0.0
+            self.publisher_.publish(self.cmd)
+            self.get_logger().info("Stopping robot as tag was found")
 
 def main(args=None):
     rclpy.init(args=args)
